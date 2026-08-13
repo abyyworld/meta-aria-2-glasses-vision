@@ -114,7 +114,11 @@ class DevicePipeline:
         )
         self._hooks: list[Callable[[FrameResult], None]] = []
         self._profiles = cfg.disambiguation.device_profiles
-        self.interaction_tracker = InteractionTracker(profiles=self._profiles)
+        self.interaction_tracker = InteractionTracker(
+            profiles=self._profiles,
+            require_gaze=cfg.require_gaze,
+            gaze_grace_ms=cfg.gaze_grace_ms,
+        )
 
     # -- integration -------------------------------------------------------
     def add_result_hook(self, hook: Callable[[FrameResult], None]) -> None:

@@ -204,3 +204,87 @@ class TestInteractionTracker:
         record = event.to_record()
         json.dumps(record)
         assert set(record) >= {"state", "device", "hand", "pose", "x", "y", "timestamp_ns"}
+
+
+# ------------------------------------------------------------- gaze gating
+class TestGazeGating:
+    """A device must stay inert unless the wearer is looking at it.
+
+    With three devices 20 cm apart, a hand reaching for the tablet crosses over
+    the laptop on nearly every reach. Without gating, the laptop fires events
+    the wearer never intended.
+    """
+
+    def _tracker(self, **kw):
+        return InteractionTracker(profiles=PROFILES, require_gaze=True, **kw)
+
+    def test_unlooked_device_ignores_a_hand_on_it(self):
+        tracker = self._tracker()
+        device = det(0, 0, 200, 300, TABLET)
+        device.gazed_at = False
+        assert tracker.update([hand_at(100, 150)], [device], 0) == []
+
+    def test_looked_at_device_reacts(self):
+        tracker = self._tracker()
+        device = det(0, 0, 200, 300, TABLET)
+        device.gazed_at = True
+        [event] = tracker.update([hand_at(100, 150)], [device], 0)
+        assert event.state is InteractionState.ENTER
+
+    def test_hand_crossing_an_unlooked_device_fires_only_on_the_looked_one(self):
+        """The exact 20-cm-apart failure this gating exists to prevent."""
+        tracker = self._tracker()
+        laptop = det(0, 0, 200, 300, "laptop", track_id=1)
+        laptop.gazed_at = False
+        tablet = det(220, 0, 420, 300, TABLET, track_id=2)
+        tablet.gazed_at = True
+
+        # The hand is physically on the laptop, but the wearer is looking at the
+        # tablet: the laptop must stay silent. The tablet may legitimately
+        # report an approach, since the hand is heading towards it.
+        crossing = tracker.update([hand_at(100, 150)], [laptop, tablet], 0)
+        assert all(e.device_label != "laptop" for e in crossing), (
+            "laptop fired while the wearer looked elsewhere"
+        )
+        assert all(e.state is not InteractionState.ENTER for e in crossing)
+
+        arriving = tracker.update([hand_at(320, 150)], [laptop, tablet], 1_000_000)
+        assert [(e.device_label, e.state) for e in arriving] == [
+            (TABLET, InteractionState.ENTER)
+        ]
+
+    def test_grace_period_survives_a_glance_away(self):
+        """Gaze flicking to the moving hand must not kill the interaction."""
+        tracker = self._tracker(gaze_grace_ms=800.0)
+        device = det(0, 0, 200, 300, TABLET)
+        device.gazed_at = True
+        tracker.update([hand_at(100, 150)], [device], 0)
+
+        device.gazed_at = False
+        [event] = tracker.update([hand_at(100, 150)], [device], 400_000_000)  # 400 ms
+        assert event.state is InteractionState.MOVE
+
+    def test_interaction_ends_once_grace_expires(self):
+        tracker = self._tracker(gaze_grace_ms=800.0)
+        device = det(0, 0, 200, 300, TABLET)
+        device.gazed_at = True
+        tracker.update([hand_at(100, 150)], [device], 0)
+
+        device.gazed_at = False
+        events = tracker.update([hand_at(100, 150)], [device], 2_000_000_000)  # 2 s
+        assert [e.state for e in events] == [InteractionState.LEAVE]
+
+    def test_gating_is_off_by_default_for_non_aria_sources(self):
+        """A webcam has no gaze stream; requiring it would emit nothing at all."""
+        tracker = InteractionTracker(profiles=PROFILES)
+        device = det(0, 0, 200, 300, TABLET)  # gazed_at defaults False
+        assert tracker.update([hand_at(100, 150)], [device], 0)
+
+    def test_reset_clears_gaze_memory(self):
+        tracker = self._tracker()
+        device = det(0, 0, 200, 300, TABLET)
+        device.gazed_at = True
+        tracker.update([hand_at(100, 150)], [device], 0)
+        tracker.reset()
+        device.gazed_at = False
+        assert tracker.update([hand_at(100, 150)], [device], 1_000_000) == []

@@ -271,10 +271,38 @@ class InteractionTracker:
     of the same class ever appears, switch this to the track id.
     """
 
-    def __init__(self, approach_distance: float = 0.6, profiles: dict | None = None) -> None:
+    def __init__(
+        self,
+        approach_distance: float = 0.6,
+        profiles: dict | None = None,
+        require_gaze: bool = False,
+        gaze_grace_ms: float = 800.0,
+    ) -> None:
         self.approach_distance = approach_distance
         self.profiles = profiles or {}
+        self.require_gaze = require_gaze
+        self.gaze_grace_ms = gaze_grace_ms
         self._inside: set[tuple[str, str]] = set()
+        self._last_gaze_ns: dict[str, int] = {}
+
+    def _is_attended(self, det: Detection, timestamp_ns: int) -> bool:
+        """Is the wearer looking at this device?
+
+        Gated with hysteresis rather than on the instantaneous gaze flag. Eyes
+        saccade constantly, and during a reach the gaze very often flicks to the
+        moving hand — so a strict test would drop the interaction in the middle
+        of the gesture it is meant to capture. Once a device has been looked at
+        it stays attended for ``gaze_grace_ms`` after gaze leaves.
+        """
+        if not self.require_gaze:
+            return True
+        if getattr(det, "gazed_at", False):
+            self._last_gaze_ns[det.label] = timestamp_ns
+            return True
+        last = self._last_gaze_ns.get(det.label)
+        if last is None:
+            return False
+        return (timestamp_ns - last) <= self.gaze_grace_ms * 1e6
 
     def update(
         self,
@@ -292,6 +320,8 @@ class InteractionTracker:
             pose, _ = classify_pose(hand)
 
             for det in detections:
+                if not self._is_attended(det, timestamp_ns):
+                    continue  # not being looked at: this device must stay inert
                 profile = self.profiles.get(det.label)
                 rect = screen_rect(det.bbox_xyxy, profile) if profile else det.bbox_xyxy
                 key = (hand.side, det.label)
@@ -350,6 +380,7 @@ class InteractionTracker:
 
     def reset(self) -> None:
         self._inside.clear()
+        self._last_gaze_ns.clear()
 
 
 def analyse_interactions(

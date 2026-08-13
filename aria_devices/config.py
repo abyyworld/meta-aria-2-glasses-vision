@@ -372,6 +372,16 @@ class PipelineConfig:
 
     # Gaze
     gaze_hit_radius_px: float = 90.0
+
+    # Gaze gating: a device only reacts to hands while the wearer is looking at
+    # it. This is what stops a hand crossing over the laptop on its way to the
+    # tablet from firing events on the laptop — with three devices 20 cm apart,
+    # that crossing happens on almost every reach.
+    require_gaze: bool = True
+    # Grace period after gaze leaves. Eyes saccade constantly and during a reach
+    # gaze often flicks to the moving hand, so an instantaneous test would drop
+    # the interaction midway through the very gesture it exists to capture.
+    gaze_grace_ms: float = 800.0
     gaze_depth_m: float = 1.0  # depth at which the gaze ray is projected
 
     # Output
