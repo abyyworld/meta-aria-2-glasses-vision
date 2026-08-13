@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aria-devices"
+version = "0.1.0"
+description = "Detect and label laptops, tablets, phones and hands in Project Aria Gen 2 egocentric video"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+
+# Core deps only. Everything heavy or hardware-bound is an extra so that the
+# disambiguation/tracking unit tests run on a bare machine.
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Open-vocabulary detector (default backend) + hand landmarks.
+detect = [
+    "ultralytics>=8.3",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "mediapipe>=0.10",
+]
+# Alternative open-vocab backend.
+owlv2 = [
+    "transformers>=4.40",
+    "torch>=2.2",
+]
+# Offline VRS reading. 2.1.x is the first line with Gen 2 support.
+vrs = [
+    "projectaria-tools[all]>=2.1,<3",
+]
+# Live streaming off the glasses. Python 3.10-3.12 only.
+live = [
+    "projectaria-client-sdk>=2.0",
+]
+dev = [
+    "pytest>=7.4",
+]
+
+[project.scripts]
+aria-devices = "aria_devices.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["aria_devices*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "needs_weights: requires downloaded model weights / network",
+    "needs_vrs: requires projectaria-tools and a .vrs file",
+    "needs_hardware: requires paired Aria Gen 2 glasses",
+]

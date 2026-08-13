@@ -1,0 +1,32 @@
+# Virtualenv
+.venv/
+venv/
+
+# Model weights — downloaded on first use, too large to version
+*.pt
+*.task
+weights/
+
+# Outputs: annotated frames, dashboards and JSONL from real sessions.
+# These contain imagery of the wearer's room, hands and screens — never commit.
+out/
+*.vrs
+
+# Generated test fixtures
+assets/synthetic.mp4
+assets/test_frame.png
+assets/real_*
+
+# The Aria v1 study, kept locally as reference; it has its own repository.
+_Omni_Conect_Aria_Ver1-main/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# macOS
+.DS_Store

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Launcher that needs no venv activation and works from any directory.
+#
+#   ./aria-devices view --live
+#   ~/Desktop/"visualisation model for my omni connect study"/aria-devices camera
+#
+# Everything after the script name is passed straight through to the CLI.
+set -euo pipefail
+cd "$(dirname "$0")"
+exec .venv/bin/python -m aria_devices.cli "$@"
