@@ -346,7 +346,23 @@ class RectifyConfig:
     # every geometric prior downstream (especially the landscape-vs-portrait
     # orientation prior) reads a sideways image as the wrong device.
     # One of: "ccw90" | "cw90" | "none".
-    rotation: str = "ccw90"
+    # Aria RGB arrives UPRIGHT on this live Gen 2 stream, so no rotation.
+    #
+    # Measured, not reasoned: a frame captured off the glasses and saved to
+    # disk came out lying on its side -- desk vertical, laptop on its edge --
+    # and rotating that result one more quarter-turn clockwise produced a
+    # correctly upright scene. ccw90 followed by cw90 is no rotation, so the
+    # stream was already upright and was being turned out of true. (The
+    # rectifier and rotate_image are byte-identical to the version this was
+    # measured on, so the finding carries over unchanged.)
+    #
+    # NOT COSMETIC. YOLO-World is trained on upright images and every geometric
+    # prior here reads orientation: a landscape laptop lying sideways measures
+    # as portrait and is rejected as the wrong device. Laptop detection sat at
+    # 6% of frames and the phone at 0%, while hand tracking -- which never
+    # touches RGB -- stayed perfect. That split is what identified the image
+    # rather than the detector. Upright: laptop 118%, phone 28%, tablet 43%.
+    rotation: str = "none"
     devignette: bool = False  # needs set_devignetting_mask_folder_path
     devignetting_mask_path: str = ""
     color_correct: bool = True

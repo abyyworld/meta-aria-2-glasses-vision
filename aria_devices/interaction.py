@@ -322,14 +322,81 @@ class InteractionTracker:
             return False
         return (timestamp_ns - last) <= self.gaze_grace_ms * 1e6
 
+    def _marker_events(self, hands, located, locator, timestamp_ns, seen_inside):
+        """Events for devices whose screen plane is known from their marker.
+
+        No bounding box is consulted. The homography maps the fingertip
+        straight into screen coordinates, so "is the hand on the screen"
+        becomes whether that lands inside the unit square -- the actual
+        question asked directly, rather than approximated by an axis-aligned
+        rectangle that cannot represent tilt.
+
+        A marker also identifies its own device, so this does not depend on the
+        open-vocabulary detector having spotted anything. That matters: device
+        detection ran at 28-63% of frames, and a device visible half the time
+        is not one you can reliably drop something onto.
+
+        NOT GAZE-GATED, unlike the box path. A marker states which device it is
+        drawn on and the homography states that the hand is on that screen;
+        both are certain in a way an inferred gaze ray is not, so requiring a
+        look as well would add a failure mode without adding evidence. If the
+        study wants "devices react only when looked at" as a design rule rather
+        than a disambiguation aid, gate it here too.
+        """
+        out = []
+        for hand in hands:
+            point = fingertip_centroid(hand)
+            if point is None:
+                continue
+            pose, _ = classify_pose(hand)
+            for device in located:
+                mapped = locator.to_screen(device, point[0], point[1])
+                if mapped is None:
+                    continue
+                x, y = mapped
+                key = (hand.side, device)
+                if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+                    seen_inside.add(key)
+                    state = (InteractionState.MOVE if key in self._inside
+                             else InteractionState.ENTER)
+                    out.append(InteractionEvent(
+                        state=state, device_label=device, device_track_id=None,
+                        hand_side=hand.side, pose=pose, timestamp_ns=timestamp_ns,
+                        x=float(x), y=float(y), distance=0.0))
+                elif key not in self._inside:
+                    # Distance outside the screen, in screen widths, so the
+                    # approach threshold keeps the same meaning it has for a
+                    # box and does not need tuning twice.
+                    dx = max(0.0, x - 1.0, -x)
+                    dy = max(0.0, y - 1.0, -y)
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist <= self.approach_distance:
+                        out.append(InteractionEvent(
+                            state=InteractionState.APPROACH, device_label=device,
+                            device_track_id=None, hand_side=hand.side, pose=pose,
+                            timestamp_ns=timestamp_ns, distance=float(dist)))
+        return out
+
     def update(
         self,
         hands: Sequence[HandSample],
         detections: Sequence[Detection],
         timestamp_ns: int,
+        locator=None,
     ) -> list[InteractionEvent]:
+        """``locator`` is an optional ScreenLocator. Where a device's marker has
+        been found, its homography REPLACES the bounding box for deciding both
+        whether the hand is on the screen and where. The box is a fallback, not
+        a second opinion: it cannot represent perspective, so mixing the two
+        would make a reported position mean different things depending on which
+        happened to be available that frame."""
         events: list[InteractionEvent] = []
         seen_inside: set[tuple[str, str]] = set()
+
+        located = locator.located() if locator is not None else set()
+        if located:
+            events.extend(self._marker_events(hands, located, locator,
+                                              timestamp_ns, seen_inside))
 
         for hand in hands:
             point = fingertip_centroid(hand)
@@ -338,6 +405,8 @@ class InteractionTracker:
             pose, _ = classify_pose(hand)
 
             for det in detections:
+                if det.label in located:
+                    continue          # the marker already answered, exactly
                 if not self._is_attended(det, timestamp_ns):
                     continue  # not being looked at: this device must stay inert
                 rect = device_screen_rect(det, self.profiles)

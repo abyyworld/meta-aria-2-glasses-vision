@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     # -- live -------------------------------------------------------------
     p_live = sub.add_parser("live", help="live stream from paired Aria Gen 2 glasses")
     p_live.add_argument("--serial", type=str, help="device serial")
+    p_live.add_argument("--no-enhance", action="store_true",
+                        help="do not lift underexposed frames before detection")
+    p_live.add_argument("--ip", type=str,
+                        help="device IP; the only way to reach the glasses "
+                             "over Wi-Fi (serial lookup needs USB)")
     p_live.add_argument(
         "--profile", type=str, default="mp_streaming_demo",
         help="mp_streaming_demo (ML streams) | profile9 | low_latency_streaming (coolest)",
@@ -293,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
 
         source = LiveFrameSource(
             serial=args.serial,
+            ip=getattr(args, "ip", None),
+            enhance=not getattr(args, "no_enhance", False),
             profile=args.profile,
             interface=args.interface,
             port=args.port,

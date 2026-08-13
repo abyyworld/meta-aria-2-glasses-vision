@@ -25,6 +25,7 @@ from .hands import (
     OpenVocabHandDetector,
     build_hand_detector,
 )
+from .markers import ScreenLocator
 from .interaction import (
     HandInteraction,
     InteractionEvent,
@@ -119,6 +120,10 @@ class DevicePipeline:
             require_gaze=cfg.require_gaze,
             gaze_grace_ms=cfg.gaze_grace_ms,
         )
+        # Fiducial markers, where the devices show them. This is what makes a
+        # position on a screen measurable rather than estimated -- markers.py
+        # explains why an axis-aligned box cannot be.
+        self.screen_locator = ScreenLocator()
 
     # -- integration -------------------------------------------------------
     def add_result_hook(self, hook: Callable[[FrameResult], None]) -> None:
@@ -202,6 +207,11 @@ class DevicePipeline:
             scored = [d for d in scored if not self._is_world_fixed_distractor(d)]
             scored = self.persistence.update(scored, frame.frame_idx)
 
+        # Markers first: cheap, and where one is found it settles both which
+        # device is present and exactly where its screen is, which the detector
+        # can only approximate.
+        self.screen_locator.update(frame.rgb)
+
         self.gaze_attributor.attribute(scored, frame.gaze, frame.timestamp_ns)
 
         # Gaze gating only makes sense where there is a gaze stream. A webcam,
@@ -217,7 +227,8 @@ class DevicePipeline:
             detections=scored,
             hands=hands,
             interactions=analyse_interactions(hands, scored, self._profiles),
-            events=self.interaction_tracker.update(hands, scored, frame.timestamp_ns),
+            events=self.interaction_tracker.update(hands, scored, frame.timestamp_ns,
+                                                   locator=self.screen_locator),
             gaze_point=frame.gaze.point_px if frame.gaze else None,
             detect_ms=detect_ms,
         )

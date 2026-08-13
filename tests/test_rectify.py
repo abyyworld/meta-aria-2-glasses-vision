@@ -108,10 +108,15 @@ class TestRectifyMaps:
 
 
 class TestRectifyConfig:
-    def test_defaults_are_square_and_rotated(self):
+    def test_defaults_are_square_and_upright(self):
         cfg = RectifyConfig()
         assert cfg.enabled
-        assert cfg.rotation == "ccw90"  # verified against the live Gen 2 stream
+        # No rotation: the live Gen 2 stream arrives upright. This asserted
+        # "ccw90" on the strength of a comment claiming verification. A frame
+        # captured off the glasses settled it: the saved image was lying on its
+        # side, and one more clockwise quarter-turn made it upright, so ccw90
+        # was turning an already-upright stream out of true.
+        assert cfg.rotation == "none"
         assert cfg.size[0] == cfg.size[1]
 
     def test_focal_and_size_are_overridable(self):

@@ -151,6 +151,8 @@ class LiveFrameSource(FrameSource):
     def __init__(
         self,
         serial: str | None = None,
+        ip: str | None = None,
+        enhance: bool = True,
         profile: str = DEFAULT_PROFILE,
         interface: str = "usb",
         rectify: RectifyConfig | None = None,
@@ -170,6 +172,8 @@ class LiveFrameSource(FrameSource):
                 "pip install 'aria-devices[live]'"
             ) from exc
 
+        self.enhance = enhance
+        self._enhance_logged = False
         if interface not in INTERFACE_NAMES:
             raise ValueError(f"interface must be one of {INTERFACE_NAMES}, got {interface!r}")
 
@@ -196,9 +200,50 @@ class LiveFrameSource(FrameSource):
         # -- connect --------------------------------------------------------
         client = sdk_gen2.DeviceClient()
         client.set_client_config(sdk_gen2.DeviceClientConfig())
-        target = sdk_gen2.DeviceTarget(serial=serial) if serial else sdk_gen2.DeviceTarget()
-        log.info("connecting to Aria Gen 2 (serial=%s)", serial or "<first available>")
-        self.device = client.connect(target)
+        # AN EXPLICIT IP IS THE ONLY THING THAT REACHES THEM OVER WI-FI.
+        # Bare discovery looks over USB and reports "(-4) No devices found";
+        # serial lookup needs a route a phone hotspot does not provide and
+        # fails "no route to host" then "device not found". Neither error hints
+        # at trying an address, so the address is offered here.
+        if ip:
+            target = sdk_gen2.DeviceTarget(ip=ip); how = f"ip={ip}"
+        elif serial:
+            target = sdk_gen2.DeviceTarget(serial=serial); how = f"serial={serial}"
+        else:
+            target = sdk_gen2.DeviceTarget(); how = "<first available over USB>"
+        log.info("connecting to Aria Gen 2 (%s)", how)
+
+        # THE CONNECT AFTER A PREVIOUS RUN NEEDS PATIENCE, NOT A DIFFERENT
+        # ADDRESS. Measured over a night of runs: a successful run is regularly
+        # followed by one that cannot connect at all, three attempts running,
+        # while the glasses sit in the ARP table at the same address. A minute
+        # later it works. That is the previous session tearing down on the
+        # device, not the network, and impatient retries diagnose it as dead
+        # hardware and send you to check cables that are fine.
+        backoffs = (2.0, 5.0, 10.0, 15.0, 20.0)
+        last = None
+        for attempt, wait in enumerate(backoffs, 1):
+            try:
+                self.device = client.connect(target)
+                if attempt > 1:
+                    log.info("connected on attempt %d", attempt)
+                break
+            except Exception as exc:
+                last = exc
+                log.warning("connect attempt %d/%d failed: %s",
+                            attempt, len(backoffs), exc)
+                if attempt == 2:
+                    log.warning("usually the previous session still closing on "
+                                "the glasses; waiting it out")
+                if attempt < len(backoffs):
+                    time.sleep(wait)
+        else:
+            raise RuntimeError(
+                f"could not connect to the glasses ({how}) after "
+                f"{len(backoffs)} attempts over ~{int(sum(backoffs))}s: {last}. "
+                f"If they are in `arp -an` at this address, power-cycle them: "
+                f"that clears a session the SDK cannot."
+            )
         self._client = client
         self._warn_if_hot()
 
@@ -239,7 +284,76 @@ class LiveFrameSource(FrameSource):
         log.info("starting HTTP receiver on port %d", port)
         self.receiver.start_server()
         log.info("starting stream: profile=%s interface=%s", profile, interface)
-        self.device.start_streaming()
+        # A KILLED RUN LEAVES THE SESSION OPEN ON THE GLASSES, and the next is
+        # refused with "(7) User session already started". Nothing in that
+        # message says the cure is to stop the previous stream, so it reads as
+        # dead hardware -- and it happens whenever a run is Ctrl-C'd at the
+        # wrong moment, which is most of them. Tearing down takes the glasses a
+        # few seconds, so back off rather than hammering.
+        try:
+            self.device.start_streaming()
+        except Exception as exc:
+            if "already started" not in str(exc).lower():
+                raise
+            log.warning("a previous streaming session is still open, clearing it")
+            for wait in (2.0, 4.0, 6.0):
+                try:
+                    self.device.stop_streaming()
+                except Exception:
+                    pass
+                time.sleep(wait)
+                try:
+                    self.device.start_streaming()
+                    log.info("cleared the old session and started streaming")
+                    break
+                except Exception as retry_exc:
+                    if "already started" not in str(retry_exc).lower():
+                        raise
+            else:
+                raise RuntimeError(
+                    "the glasses are still holding a streaming session from an "
+                    "earlier run. Power-cycle them; that always clears it."
+                ) from exc
+
+    # -- exposure -----------------------------------------------------------
+    #: Below this mean grey level a frame is underexposed. Normal indoor
+    #: exposure sits around 100-140.
+    DARK_MEAN = 85.0
+
+    def _brighten(self, rgb):
+        """Lift an underexposed frame before anything tries to detect in it.
+
+        MEASURED. Frames off these glasses came in at a mean grey level of
+        29.8/255 with 73% of pixels below 40 -- nearly black. The detector was
+        handed that and unsurprisingly found almost nothing. Brightening takes
+        it to ~113.
+
+        CLAHE on the L channel rather than a global gain or gamma, because the
+        problem is local: a lit screen beside a dark desk is exactly what a
+        global curve crushes or blows out, and the screen edges are what the
+        device boxes are found from.
+
+        Adaptive, so a well-exposed frame is left untouched and this cannot
+        hurt a session in a brighter room.
+        """
+        grey = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        mean = float(grey.mean())
+        if mean >= self.DARK_MEAN:
+            return rgb
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+        l, a_, b_ = cv2.split(lab)
+        l = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(l)
+        # CLAHE fixes contrast, not overall level. Very dark frames still need
+        # lifting, capped so shadow noise is not amplified into edges the
+        # detector reads as structure.
+        if mean < 55.0:
+            l = cv2.convertScaleAbs(l, alpha=min(2.2, 85.0 / max(mean, 1.0)), beta=0)
+        out = cv2.cvtColor(cv2.merge((l, a_, b_)), cv2.COLOR_LAB2RGB)
+        if not self._enhance_logged:
+            log.info("frames are underexposed (mean %.0f/255), brightening "
+                     "before detection", mean)
+            self._enhance_logged = True
+        return out
 
     # -- device health ------------------------------------------------------
     def device_status(self):
@@ -352,6 +466,8 @@ class LiveFrameSource(FrameSource):
             if array.ndim == 2:
                 array = cv2.cvtColor(array, cv2.COLOR_GRAY2RGB)
             rgb = self._rectifier.rectify(array) if self._rectifier else array
+            if self.enhance:
+                rgb = self._brighten(rgb)
 
             with self._lock:
                 gaze = self._latest_gaze
@@ -411,6 +527,13 @@ class _LiveRectifier:
         self._gaze_projector = GazeProjector(device_calib, self.final_calib)
 
     def rectify(self, image: np.ndarray) -> np.ndarray:
+        # rotate_image is imported INSIDE __init__, so it is a local there and
+        # invisible here: every call raised "NameError: name 'rotate_image' is
+        # not defined" the moment a frame arrived. The connection, the streams
+        # and the detector all looked healthy -- 64 RGB frames enqueued and
+        # processed -- and not one frame ever reached the pipeline.
+        from .vrs import rotate_image
+
         if not self.cfg.enabled:
             return image
         out = cv2.remap(
