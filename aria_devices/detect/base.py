@@ -36,6 +36,17 @@ class Detection:
     #: act on remembered geometry can filter on it.
     persisted: bool = False
 
+    #: Measured screen rectangle, when geometry gives a better answer than the
+    #: profile's fixed inset. For a laptop this comes from the detected
+    #: keyboard: its top edge *is* the bottom of the screen, so the lid angle
+    #: no longer has to be assumed.
+    screen_box: tuple[float, float, float, float] | None = None
+
+    #: True when the box touches a frame edge, so the object is cut off. Any
+    #: position normalised against a clipped box is wrong by an unknown amount,
+    #: because the true extent is off-screen.
+    clipped: bool = False
+
     @property
     def width(self) -> float:
         return max(0.0, self.bbox_xyxy[2] - self.bbox_xyxy[0])

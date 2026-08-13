@@ -76,23 +76,58 @@ def draw_frame(
     return canvas
 
 
+def _dim(color: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, int]:
+    return tuple(int(c * factor) for c in color)
+
+
 def _draw_detection(canvas: np.ndarray, det: Detection, cfg: VizConfig) -> None:
     x1, y1, x2, y2 = (int(round(v)) for v in det.bbox_xyxy)
-    color = color_for(det.label)
-    # A gazed-at device gets a heavier border — the whole point of doing this
-    # on Aria is knowing which screen the wearer is actually attending to.
-    thickness = cfg.box_thickness + 2 if det.gazed_at else cfg.box_thickness
+    base = color_for(det.label)
+
+    # Armed vs inert. Under gaze gating an unlooked device ignores hands
+    # entirely, so drawing every box identically hides the single most
+    # important piece of state: which device would actually respond right now.
+    armed = bool(det.gazed_at)
+    color = base if armed else _dim(base)
+    thickness = cfg.box_thickness + 2 if armed else 1
     cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
+
+    # The screen rectangle is where a cursor can land, and for a laptop it is
+    # nowhere near the full box — worth seeing rather than inferring.
+    if armed and cfg.draw_screen_rect:
+        profile = DEFAULT_DEVICE_PROFILES.get(det.label)
+        if profile is not None:
+            from .interaction import device_screen_rect
+
+            sx1, sy1, sx2, sy2 = (int(round(v)) for v in device_screen_rect(det, DEFAULT_DEVICE_PROFILES))
+            if (sx1, sy1, sx2, sy2) != (x1, y1, x2, y2):
+                _dashed_rect(canvas, (sx1, sy1), (sx2, sy2), color)
 
     parts = [det.label]
     if det.track_id is not None:
         parts.append(f"#{det.track_id}")
     parts.append(f"{det.score:.2f}")
-    if det.gazed_at:
-        parts.append(f"GAZE {det.gaze_dwell_ms:.0f}ms")
-    label = " ".join(parts)
+    if det.persisted:
+        parts.append("HELD")
+    if det.clipped:
+        parts.append("CLIPPED")
+    if det.screen_box is not None:
+        parts.append("kb-screen")
+    parts.append("ARMED" if armed else "inert")
+    if armed and det.gaze_dwell_ms:
+        parts.append(f"{det.gaze_dwell_ms:.0f}ms")
 
-    _draw_label(canvas, label, (x1, y1), color, cfg.font_scale)
+    _draw_label(canvas, " ".join(parts), (x1, y1), color, cfg.font_scale)
+
+
+def _dashed_rect(canvas, p1, p2, color, dash: int = 12) -> None:
+    (x1, y1), (x2, y2) = p1, p2
+    for x in range(x1, x2, dash * 2):
+        cv2.line(canvas, (x, y1), (min(x + dash, x2), y1), color, 1)
+        cv2.line(canvas, (x, y2), (min(x + dash, x2), y2), color, 1)
+    for y in range(y1, y2, dash * 2):
+        cv2.line(canvas, (x1, y), (x1, min(y + dash, y2)), color, 1)
+        cv2.line(canvas, (x2, y), (x2, min(y + dash, y2)), color, 1)
 
     if cfg.draw_signals and det.signals:
         keys = ("text", "shape", "size", "diag_cm")

@@ -197,6 +197,19 @@ def screen_rect(
     return (sx1, sy1, sx2, sy2)
 
 
+def device_screen_rect(det: Detection, profiles: dict | None = None) -> tuple[float, float, float, float]:
+    """Best available screen rectangle for a detection.
+
+    Prefers a *measured* rectangle (``det.screen_box``, derived from the
+    detected keyboard for a laptop) over the profile's fixed inset, because the
+    inset only holds for one lid angle and is a guess everywhere else.
+    """
+    if det.screen_box is not None:
+        return det.screen_box
+    profile = (profiles or {}).get(det.label)
+    return screen_rect(det.bbox_xyxy, profile) if profile else det.bbox_xyxy
+
+
 def normalised_distance(
     box: tuple[float, float, float, float], x: float, y: float
 ) -> float:
@@ -243,6 +256,10 @@ class InteractionEvent:
     y: float | None = None
     distance: float = 0.0  # in device diagonals; 0 when over the screen
     device_track_id: int | None = None
+    #: The device box was cut off by the frame edge, so x/y are normalised
+    #: against a truncated box and are wrong by an unknown amount. Consumers
+    #: should treat the state as valid but the coordinates as unreliable.
+    clipped: bool = False
 
     def to_record(self) -> dict:
         return {
@@ -254,6 +271,7 @@ class InteractionEvent:
             "x": round(self.x, 4) if self.x is not None else None,
             "y": round(self.y, 4) if self.y is not None else None,
             "distance": round(self.distance, 3),
+            "clipped": self.clipped,
             "timestamp_ns": self.timestamp_ns,
         }
 
@@ -322,8 +340,7 @@ class InteractionTracker:
             for det in detections:
                 if not self._is_attended(det, timestamp_ns):
                     continue  # not being looked at: this device must stay inert
-                profile = self.profiles.get(det.label)
-                rect = screen_rect(det.bbox_xyxy, profile) if profile else det.bbox_xyxy
+                rect = device_screen_rect(det, self.profiles)
                 key = (hand.side, det.label)
                 rel = relative_position(rect, point[0], point[1])
 
@@ -345,6 +362,7 @@ class InteractionTracker:
                             x=rel[0],
                             y=rel[1],
                             distance=0.0,
+                            clipped=det.clipped,
                         )
                     )
                     continue
@@ -401,8 +419,7 @@ def analyse_interactions(
         if point is not None:
             candidates = []
             for idx, det in enumerate(detections):
-                profile = (profiles or {}).get(det.label)
-                rect = screen_rect(det.bbox_xyxy, profile) if profile else det.bbox_xyxy
+                rect = device_screen_rect(det, profiles)
                 rel = relative_position(rect, point[0], point[1])
                 if rel is not None:
                     candidates.append((det.area, idx, det, rel))

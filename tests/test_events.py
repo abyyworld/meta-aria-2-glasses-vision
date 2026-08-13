@@ -288,3 +288,127 @@ class TestGazeGating:
         tracker.reset()
         device.gazed_at = False
         assert tracker.update([hand_at(100, 150)], [device], 1_000_000) == []
+
+
+# ------------------------------------- laptop screen from measured keyboard
+class TestKeyboardDerivedScreen:
+    """The laptop cursor must not depend on guessing the lid angle."""
+
+    def test_measured_screen_box_wins_over_the_profile_inset(self):
+        from aria_devices.interaction import device_screen_rect
+
+        d = det(0, 0, 400, 300, LAPTOP)
+        assert device_screen_rect(d, PROFILES)[3] == pytest.approx(300 * 0.62, abs=1)
+
+        d.screen_box = (10.0, 10.0, 390.0, 200.0)  # keyboard top at y=200
+        assert device_screen_rect(d, PROFILES) == (10.0, 10.0, 390.0, 200.0)
+
+    def test_keyboard_sets_the_screen_bottom(self):
+        """A lid open wider than assumed must still map correctly."""
+        from aria_devices.config import PipelineConfig
+        from aria_devices.detect.base import Detection
+        from aria_devices.detect.disambiguate import score_detections
+
+        cfg = PipelineConfig().disambiguation
+        laptop = Detection((100.0, 100.0, 500.0, 460.0), 0.9, "laptop")
+        keyboard = Detection((110.0, 380.0, 490.0, 455.0), 0.6, "computer keyboard")
+        out = score_detections([laptop, keyboard], cfg)
+
+        lap = [d for d in out if d.label == LAPTOP]
+        assert lap, "laptop should survive"
+        assert lap[0].screen_box is not None
+        # Screen bottom follows the keyboard top (380), not the 0.38 inset
+        # which would have put it at 100 + 0.62*360 = 323.
+        assert lap[0].screen_box[3] == pytest.approx(380.0, abs=1.0)
+        assert any("screen_from_keyboard" in n for n in lap[0].notes)
+
+    def test_no_keyboard_falls_back_to_the_inset(self):
+        from aria_devices.config import PipelineConfig
+        from aria_devices.detect.base import Detection
+        from aria_devices.detect.disambiguate import score_detections
+
+        cfg = PipelineConfig().disambiguation
+        out = score_detections([Detection((100.0, 100.0, 500.0, 460.0), 0.9, "laptop")], cfg)
+        assert out[0].screen_box is None
+
+
+class TestClippedBoxes:
+    """A box cut off by the frame edge yields coordinates of unknown error."""
+
+    def test_edge_touching_box_is_flagged(self):
+        import numpy as np
+
+        from aria_devices.config import PipelineConfig
+        from aria_devices.detect.base import Detection
+        from aria_devices.detect.disambiguate import score_detections
+
+        cfg = PipelineConfig().disambiguation
+        image = np.zeros((480, 640, 3), np.uint8)
+        out = score_detections(
+            [Detection((0.0, 100.0, 300.0, 400.0), 0.9, "laptop")], cfg, image_rgb=image
+        )
+        assert out[0].clipped
+        assert any("clipped" in n for n in out[0].notes)
+
+    def test_interior_box_is_not_flagged(self):
+        import numpy as np
+
+        from aria_devices.config import PipelineConfig
+        from aria_devices.detect.base import Detection
+        from aria_devices.detect.disambiguate import score_detections
+
+        cfg = PipelineConfig().disambiguation
+        image = np.zeros((480, 640, 3), np.uint8)
+        out = score_detections(
+            [Detection((50.0, 100.0, 300.0, 400.0), 0.9, "laptop")], cfg, image_rgb=image
+        )
+        assert not out[0].clipped
+
+    def test_clipped_flag_reaches_the_event(self):
+        tracker = InteractionTracker(profiles=PROFILES)
+        device = det(0, 0, 200, 300, TABLET)
+        device.clipped = True
+        [event] = tracker.update([hand_at(100, 150)], [device], 0)
+        assert event.clipped
+        assert event.to_record()["clipped"] is True
+
+
+class TestGazeGatingNeedsAGazeStream:
+    """Regression: gating with no gaze stream silenced the whole pipeline."""
+
+    def _run(self, gaze):
+        import numpy as np
+
+        from aria_devices.config import PipelineConfig
+        from aria_devices.detect.base import Detection, Detector
+        from aria_devices.frames import Frame
+        from aria_devices.pipeline import DevicePipeline
+
+        class _Fake(Detector):
+            prompts = ["tablet computer"]
+
+            def detect(self, image_rgb):
+                return [Detection((100.0, 50.0, 300.0, 350.0), 0.9, "tablet computer")]
+
+        cfg = PipelineConfig()
+        cfg.hands.backend = "off"
+        cfg.track.enabled = False
+        pipe = DevicePipeline(cfg, detector=_Fake(), focal_px=600.0)
+        pipe._uses_aria_hands = True
+
+        image = np.zeros((400, 400, 3), np.uint8)
+        image[50:350, 100:300] = 200
+        frame = Frame(rgb=image, timestamp_ns=0, frame_idx=0)
+        frame.hands = [hand_at(200.0, 200.0)]
+        frame.gaze = gaze
+        result = pipe.process(frame)
+        pipe.close()
+        return result
+
+    def test_no_gaze_stream_still_emits_events(self):
+        assert self._run(None).events, "pipeline went silent without a gaze stream"
+
+    def test_gating_defaults_on_in_config(self):
+        from aria_devices.config import PipelineConfig
+
+        assert PipelineConfig().require_gaze is True

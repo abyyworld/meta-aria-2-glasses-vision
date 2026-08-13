@@ -204,6 +204,13 @@ class DevicePipeline:
 
         self.gaze_attributor.attribute(scored, frame.gaze, frame.timestamp_ns)
 
+        # Gaze gating only makes sense where there is a gaze stream. A webcam,
+        # an MP4 or a still photo has none, and requiring it there would mean
+        # no device is ever attended and the pipeline emits nothing at all.
+        self.interaction_tracker.require_gaze = (
+            self.cfg.require_gaze and frame.gaze is not None
+        )
+
         result = FrameResult(
             frame_idx=frame.frame_idx,
             timestamp_ns=frame.timestamp_ns,

@@ -357,6 +357,10 @@ class VizConfig:
     draw_gaze: bool = True
     draw_hands: bool = True
     draw_signals: bool = False  # per-signal score breakdown on the frame
+    # Outline the screen rectangle inside an armed device's box. For a laptop
+    # the two differ by the whole keyboard base, and that gap is exactly where
+    # cursor-placement bugs hide.
+    draw_screen_rect: bool = True
     box_thickness: int = 2
     font_scale: float = 0.5
 

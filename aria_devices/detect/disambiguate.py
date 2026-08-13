@@ -234,6 +234,29 @@ def is_tablet_inside_laptop(tablet: Box, laptop: Box, cfg: DisambiguationConfig)
     return iou(tablet, laptop) >= cfg.laptop_over_tablet_iou
 
 
+def keyboard_within_lower(laptop: Box, keyboard: Box, min_overlap: float = 0.6) -> bool:
+    """True when a keyboard sits inside the lower part of a laptop box.
+
+    Distinct from ``keyboard_is_below``, which handles a screen-only box with a
+    separate keyboard beneath it. An *open* laptop is usually detected as a
+    single box spanning lid and base, so its keyboard is contained rather than
+    adjacent — and the adjacency test rejects exactly that case.
+    """
+    l_x1, l_y1, l_x2, l_y2 = laptop
+    k_x1, k_y1, k_x2, k_y2 = keyboard
+    l_h = l_y2 - l_y1
+    k_area = max(1e-6, (k_x2 - k_x1) * (k_y2 - k_y1))
+    if l_h <= 0:
+        return False
+
+    ox = max(0.0, min(l_x2, k_x2) - max(l_x1, k_x1))
+    oy = max(0.0, min(l_y2, k_y2) - max(l_y1, k_y1))
+    if (ox * oy) / k_area < min_overlap:
+        return False  # keyboard is mostly outside this laptop
+    # Its top must fall in the lower half of the box: that is the lid/base seam.
+    return (k_y1 - l_y1) / l_h >= 0.35
+
+
 def keyboard_is_below(screen: Box, keyboard: Box, cfg: DisambiguationConfig) -> bool:
     """True when `keyboard` sits directly below `screen` and lines up in x.
 
@@ -462,10 +485,14 @@ def score_detections(
         # --- 4a. keyboard adjacency ----------------------------------------
         keyboard_bonus = 0.0
         matched_keyboard = False
+        keyboard_box: Box | None = None
         for kb in keyboards:
-            if keyboard_is_below(rep.bbox_xyxy, kb.bbox_xyxy, cfg):
+            below = keyboard_is_below(rep.bbox_xyxy, kb.bbox_xyxy, cfg)
+            within = keyboard_within_lower(rep.bbox_xyxy, kb.bbox_xyxy)
+            if below or within:
                 matched_keyboard = True
                 keyboard_bonus = cfg.keyboard_promotion_bonus
+                keyboard_box = kb.bbox_xyxy
                 break
 
         final: dict[str, float] = {}
@@ -521,6 +548,26 @@ def score_detections(
         }
         if matched_keyboard:
             det.notes.append("keyboard_below")
+
+        # Measure the laptop screen instead of assuming a lid angle. The
+        # keyboard's top edge is the bottom of the screen, so this adapts to
+        # however far the lid happens to be open — the fixed 0.38 inset is only
+        # correct near 105-115 degrees and drifts 5-10% of screen height either
+        # side of that.
+        if best == LAPTOP and keyboard_box is not None:
+            x1, y1, x2, _y2 = det.bbox_xyxy
+            w = x2 - x1
+            screen_bottom = keyboard_box[1]
+            if screen_bottom > y1 + 0.25 * (det.bbox_xyxy[3] - y1):
+                det.screen_box = (x1 + 0.04 * w, y1 + 0.04 * w, x2 - 0.04 * w, screen_bottom)
+                det.notes.append("screen_from_keyboard")
+
+        if image_rgb is not None:
+            h, w = image_rgb.shape[:2]
+            x1, y1, x2, y2 = det.bbox_xyxy
+            det.clipped = x1 <= 1.0 or y1 <= 1.0 or x2 >= w - 1.0 or y2 >= h - 1.0
+            if det.clipped:
+                det.notes.append("clipped_at_frame_edge")
         if vetoed:
             det.notes.append(f"size_veto({diag_cm:.0f}cm rules out {'+'.join(vetoed)})")
             log.debug("size veto at %.1f cm eliminated %s", diag_cm, vetoed)
