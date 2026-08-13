@@ -218,6 +218,13 @@ class DisambiguationConfig:
     monitor_min_diag_cm: float = 46.0  # above this it is furniture, not a device
     # A box that barely moves in the image over this many frames while the
     # wearer's head does move is world-fixed -> a monitor, not a handheld.
+    # World-fixed suppression exists to kill wall monitors and TVs. It is OFF
+    # by default because the primary setup here is the opposite case: three
+    # devices sitting still on a desk. A static tablet viewed by a seated
+    # wearer trips this rule within ~1.5 s and the device is deleted outright.
+    # Physical size (monitor_min_diag_cm) already rejects real monitors, and it
+    # does so without punishing a device for staying put.
+    suppress_world_fixed: bool = False
     world_fixed_frames: int = 45
     world_fixed_max_iou_drift: float = 0.10
 
@@ -313,6 +320,10 @@ class TrackConfig:
 
     vote_window: int = 15  # rolling label histogram length
     vote_min_fraction: float = 0.34  # majority must clear this to switch label
+
+    # Frames a confirmed device survives without being re-detected. Devices on
+    # a desk do not teleport; a hand reaching across one should not delete it.
+    persist_frames: int = 10
 
 
 @dataclass

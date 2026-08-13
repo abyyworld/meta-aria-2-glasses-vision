@@ -110,6 +110,59 @@ class Track:
         return {k: v / n for k, v in Counter(self._votes).items()}
 
 
+class DevicePersistence:
+    """Keeps a confirmed device alive briefly when detection drops out.
+
+    The devices in this study sit still on a desk and do not teleport, so a box
+    that vanishes for a few frames has almost certainly been occluded, blurred
+    or dimmed rather than removed. Without this, reaching for the tablet hides
+    part of it, detection dips below threshold, and a spurious ``leave`` fires
+    at exactly the moment the interaction matters most.
+
+    Re-emitted boxes are marked ``persisted=True`` and their score decays, so a
+    consumer can always tell a remembered box from a freshly seen one — nothing
+    is silently invented.
+    """
+
+    def __init__(self, max_age_frames: int = 10, decay: float = 0.9) -> None:
+        self.max_age_frames = max_age_frames
+        self.decay = decay
+        self._last: dict[int, tuple[Detection, int]] = {}
+
+    def update(self, detections: Sequence[Detection], frame_idx: int) -> list[Detection]:
+        out = list(detections)
+        seen = {d.track_id for d in detections if d.track_id is not None}
+
+        for det in detections:
+            if det.track_id is not None and not det.persisted:
+                self._last[det.track_id] = (det, frame_idx)
+
+        for track_id, (det, last_idx) in list(self._last.items()):
+            if track_id in seen:
+                continue
+            age = frame_idx - last_idx
+            if age > self.max_age_frames:
+                del self._last[track_id]
+                continue
+            if age <= 0:
+                continue
+            ghost = Detection(
+                bbox_xyxy=det.bbox_xyxy,
+                score=det.score * (self.decay**age),
+                raw_label=det.raw_label,
+                label=det.label,
+                track_id=det.track_id,
+                signals=dict(det.signals),
+                notes=[*det.notes, f"persisted({age}f)"],
+                persisted=True,
+            )
+            out.append(ghost)
+        return out
+
+    def reset(self) -> None:
+        self._last.clear()
+
+
 class ByteTracker:
     """Two-stage IoU association, as in ByteTrack.
 

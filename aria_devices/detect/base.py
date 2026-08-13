@@ -31,6 +31,11 @@ class Detection:
     signals: dict[str, float] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
+    #: True when this box was carried over from an earlier frame rather than
+    #: seen in this one — see track.DevicePersistence. Consumers that must not
+    #: act on remembered geometry can filter on it.
+    persisted: bool = False
+
     @property
     def width(self) -> float:
         return max(0.0, self.bbox_xyxy[2] - self.bbox_xyxy[0])

@@ -31,7 +31,7 @@ from .interaction import (
     InteractionTracker,
     analyse_interactions,
 )
-from .track import ByteTracker
+from .track import ByteTracker, DevicePersistence
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +105,7 @@ class DevicePipeline:
         self.tracker = ByteTracker(cfg.track) if cfg.track.enabled else None
         self.gaze_attributor = GazeAttributor(cfg.gaze_hit_radius_px)
         self.world_fixed = WorldFixedTracker(cfg.disambiguation)
+        self.persistence = DevicePersistence(cfg.track.persist_frames)
 
         self._hand_backend = build_hand_detector(cfg.hands, has_aria_stream=has_aria_hands)
         self._uses_aria_hands = self._hand_backend == "aria"
@@ -137,6 +138,7 @@ class DevicePipeline:
             self.tracker.reset()
         self.gaze_attributor = GazeAttributor(self.cfg.gaze_hit_radius_px)
         self.world_fixed = WorldFixedTracker(self.cfg.disambiguation)
+        self.persistence.reset()
         self.interaction_tracker.reset()
 
     def close(self) -> None:
@@ -145,6 +147,24 @@ class DevicePipeline:
         self.detector.close()
 
     # -- per frame ---------------------------------------------------------
+    def _is_world_fixed_distractor(self, det) -> bool:
+        """Only suppress a stationary object if it is monitor-sized.
+
+        Staying still is not evidence of being a distractor when the study is
+        three devices parked on a desk. Physical size is the signal that
+        actually separates a wall monitor from a laptop, so a measured
+        device-sized diagonal vetoes the suppression outright.
+        """
+        cfg = self.cfg.disambiguation
+        if not cfg.suppress_world_fixed or det.track_id is None:
+            return False
+        if not self.world_fixed.is_world_fixed(det.track_id, det.bbox_xyxy):
+            return False
+        diag = float(det.signals.get("diag_cm", 0.0) or 0.0)
+        if 0.0 < diag < cfg.monitor_min_diag_cm:
+            return False  # a real device, merely sitting still
+        return True
+
     def process(self, frame: Frame) -> FrameResult:
         t0 = time.perf_counter()
         raw = self.detector.detect(frame.rgb)
@@ -175,14 +195,8 @@ class DevicePipeline:
             for det in scored:
                 if det.track_id is not None:
                     self.world_fixed.update(det.track_id, det.bbox_xyxy)
-            scored = [
-                d
-                for d in scored
-                if not (
-                    d.track_id is not None
-                    and self.world_fixed.is_world_fixed(d.track_id, d.bbox_xyxy)
-                )
-            ]
+            scored = [d for d in scored if not self._is_world_fixed_distractor(d)]
+            scored = self.persistence.update(scored, frame.frame_idx)
 
         self.gaze_attributor.attribute(scored, frame.gaze, frame.timestamp_ns)
 
