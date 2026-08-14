@@ -8,6 +8,35 @@ Built around three specific devices (iPhone 16 Pro Max, iPad A16 11-inch,
 MacBook Air M4) but the detector is open-vocabulary, so it generalises to other
 hardware; only the physical priors are tuned to these three.
 
+**Both hands** are tracked, with handedness, bounding boxes, 21 landmarks and
+per-hand depth — see [Hands and interaction](#hands-and-interaction).
+
+---
+
+## This is the general model, not the study
+
+There are two repositories, split along what is specific to one CHI study and
+what is not.
+
+| | `meta-aria-2-glasses-vision` — this repo | [`omni-connect`](https://github.com/abyyworld/omni-connect) |
+|---|---|---|
+| **What it is** | A general Aria Gen 2 perception model. | The CHI study: three devices, two conditions, tasks and data. |
+| **Perception** | The RGB camera — detection, boxes, markers, gaze, rectification. | The glasses' own hand pose. No camera, no images. |
+| **Hands** | **Both**, with handedness and per-hand depth. | **One**, chosen per participant. |
+| **Where devices come from** | Detected in the image, per frame. | Touched once in 3D, then measured geometrically. |
+| **Optimised for** | Recognising things it was not told about in advance. | Not failing during a session with a participant sitting there. |
+
+The two share no code, and neither imports the other. The study rejected the
+camera path on measured grounds — YOLO across nine model/resolution
+combinations never once detected the phone, and COCO has no tablet class — and
+replaced it with 3D geometry that recognises nothing and therefore cannot fail
+to recognise. That is the right tradeoff for a study and the wrong one for a
+perception model, which is why these are apart.
+
+Nothing here is study-specific except the physical priors, which are documented
+as such and are replaceable. **No participant data is in this repository, and
+none ever has been.**
+
 ---
 
 ## Quick start
